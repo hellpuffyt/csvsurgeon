@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `-o` naming the input file truncated the input while it was being read
+  (a 20,000-row file came back with about 6,000 rows). It is now refused.
+- A header that repeats a column name silently replaced one column's values
+  with the other's. It is now refused with a message naming the column.
+- Text such as `nan`, `inf`, `Infinity` and `1_000` was treated as a number,
+  so `$name == 'Nan'` never matched. Only plain decimal notation is numeric now.
+- Deeply nested expressions, infinite arguments to `substr`/`round`/`split`,
+  over-long fields, undecodable input and unknown `--encoding` values crashed
+  with a Python traceback; each is now an error message with exit code 2.
+
+### Changed
+
+- README: install from source (the package is not on PyPI), memory figures
+  re-measured with the command shown, and a section on limits and refusals.
+
+### Added
+
+- `SECURITY.md`, `.editorconfig`, `docs/PRODUCTION_READINESS.md`.
+
 ## [0.1.0] — 2026-08-31
 
 First release.
