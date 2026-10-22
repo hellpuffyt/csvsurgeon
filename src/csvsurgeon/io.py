@@ -78,6 +78,16 @@ def read_rows(
     header = [name.strip() for name in header]
     if not any(header):
         raise UsageError("the header row is blank")
+    # Rows are keyed by column name, so a repeated name would make one
+    # column silently overwrite the other in every row of the output.
+    seen: set[str] = set()
+    for name in header:
+        if name in seen:
+            raise UsageError(
+                f"the header repeats column {name!r}; "
+                "column names must be unique (rename it in the source file)"
+            )
+        seen.add(name)
 
     return header, _rows(reader, header)
 

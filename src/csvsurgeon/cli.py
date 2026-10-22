@@ -11,6 +11,9 @@ recovered by giving every operation flag the same destination list
 from __future__ import annotations
 
 import argparse
+import codecs
+import csv
+import os
 import sys
 from collections.abc import Sequence
 from typing import TextIO
@@ -181,6 +184,34 @@ def build_pipeline(operations: Sequence[tuple[str, str]]) -> Pipeline:
     return Pipeline(steps)
 
 
+def _check_encoding(encoding: str) -> None:
+    """Rejects an unknown --encoding before any file is opened."""
+    try:
+        codecs.lookup(encoding)
+    except LookupError:
+        raise UsageError(f"unknown encoding {encoding!r}") from None
+
+
+def _refuse_overwriting_input(source: str | None, output: str | None) -> None:
+    """Refuses ``-o`` pointing at the input file.
+
+    Opening the output truncates it while the input is still being read,
+    so everything past the first buffered chunk would be lost.
+    """
+    if source in (None, "-") or output in (None, "-"):
+        return
+    assert source is not None and output is not None
+    if (
+        os.path.exists(source)
+        and os.path.exists(output)
+        and os.path.samefile(source, output)
+    ):
+        raise UsageError(
+            f"refusing to overwrite the input file {source!r}; "
+            "write to a different file and rename it afterwards"
+        )
+
+
 def run(
     argv: Sequence[str] | None,
     stdout: TextIO,
@@ -193,6 +224,8 @@ def run(
     operations: list[tuple[str, str]] = getattr(args, "operations", []) or []
 
     try:
+        _check_encoding(args.encoding)
+        _refuse_overwriting_input(args.input, args.output)
         pipeline = build_pipeline(operations)
         with open_input(args.input, args.encoding, stdin) as source:
             header, rows = read_rows(source, args.delimiter)
@@ -216,6 +249,16 @@ def run(
         return 0
     except CsvSurgeonError as err:
         print(f"{PROGRAM}: {err}", file=stderr)
+        return 2
+    except csv.Error as err:
+        print(f"{PROGRAM}: malformed CSV input: {err}", file=stderr)
+        return 2
+    except UnicodeDecodeError as err:
+        print(
+            f"{PROGRAM}: input is not valid {args.encoding} ({err.reason} at byte "
+            f"{err.start}); pass --encoding",
+            file=stderr,
+        )
         return 2
     except BrokenPipeError:  # pragma: no cover - depends on the consumer
         # `csvsurgeon big.csv | head` closes the pipe under us. That is

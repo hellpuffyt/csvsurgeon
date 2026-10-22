@@ -197,3 +197,10 @@ def test_open_output_reports_a_missing_directory() -> None:
         "no/such/dir/out.csv", "utf-8"
     ):
         pass
+
+
+def test_a_repeated_header_name_is_refused_rather_than_merged() -> None:
+    # Rows are dicts keyed by name: "a,a" used to emit the second
+    # column's value twice and lose the first column entirely.
+    with pytest.raises(UsageError, match="repeats column 'a'"):
+        read("a,a\n1,2\n")

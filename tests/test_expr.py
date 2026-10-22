@@ -303,3 +303,59 @@ def test_tokenize_ends_with_an_end_token() -> None:
 def test_longest_operator_wins() -> None:
     kinds = [t.text for t in tokenize("a <= b") if t.kind == "op"]
     assert kinds == ["<="]
+
+
+# --- audit regressions ----------------------------------------------------
+
+
+@pytest.mark.parametrize("word", ["Nan", "nan", "inf", "Infinity", "-inf"])
+def test_words_python_reads_as_floats_are_still_text(word: str) -> None:
+    # float("nan") succeeds, and NaN != NaN, so a person named "Nan"
+    # used to be unmatchable by `$name == 'Nan'`.
+    row: Row = {"name": word}
+    assert value(f"$name == '{word}'", row) is True
+    assert value("$name + 1", row) == f"{word}1"
+
+
+def test_underscored_digits_are_text_not_numbers() -> None:
+    assert value("$code == '1_000'", {"code": "1_000"}) is True
+    assert value("$code > 999", {"code": "1_000"}) is False
+
+
+def test_plain_decimal_notation_is_still_numeric() -> None:
+    for text, number in [("-3", -3.0), ("+2.5", 2.5), (".5", 0.5), ("1e3", 1000.0)]:
+        assert value("$x * 1", {"x": text}) == number
+
+
+def test_an_infinite_argument_is_an_expression_error_not_a_crash() -> None:
+    with pytest.raises(ExpressionError):
+        value("substr('abc', 1e308 * 10)")
+    with pytest.raises(ExpressionError):
+        value("round(1, 1e308 * 10)")
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["(" * 3000 + "1" + ")" * 3000, "+".join(["1"] * 5000), "-" * 3000 + "1"],
+    ids=["parentheses", "long-sum", "unary-chain"],
+)
+def test_pathologically_deep_expressions_are_refused(source: str) -> None:
+    with pytest.raises(ExpressionError, match="nests too deeply"):
+        parse(source)
+
+
+def test_reasonable_nesting_still_parses() -> None:
+    assert value("+".join(["1"] * 50)) == 50.0
+
+
+def test_dunder_and_attribute_spellings_are_only_ever_column_names() -> None:
+    # None of these can name anything but a CSV column; with no such
+    # column they fail validation, and with one they just read text.
+    for attack in ["__class__", "$__globals__", '$"__builtins__"', "$a.__dict__"]:
+        with pytest.raises(ColumnError):
+            value(attack)
+    assert value("__class__", {"__class__": "plain"}) == "plain"
+    with pytest.raises(ExpressionError, match="unknown function"):
+        parse("getattr($a, 'x')")
+    with pytest.raises(ExpressionError):
+        parse("upper.__call__('x')")
