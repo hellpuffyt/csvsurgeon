@@ -214,3 +214,45 @@ def test_version_is_reported() -> None:
 
 def test_help_mentions_the_ordering_rule() -> None:
     assert "in the order" in (build_parser().epilog or "")
+
+
+# --- audit regressions ----------------------------------------------------
+
+
+def test_output_over_the_input_file_is_refused_and_the_input_survives(
+    tmp_path: Path,
+) -> None:
+    # Opening -o truncated the input while it was still being read: a
+    # 20,000-row file came back with ~6,000 rows.
+    path = tmp_path / "big.csv"
+    original = "id,val\n" + "".join(f"{i},{i * 7}\n" for i in range(20000))
+    path.write_text(original, encoding="utf-8")
+    code, _, err = invoke([str(path), "-o", str(path)])
+    assert code == 2
+    assert "refusing to overwrite the input" in err
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_a_field_over_the_csv_limit_is_a_clean_error(tmp_path: Path) -> None:
+    path = tmp_path / "wide.csv"
+    path.write_text("a,b\nx," + "y" * 200_000 + "\n", encoding="utf-8")
+    code, _, err = invoke([str(path)])
+    assert code == 2
+    assert "malformed CSV input" in err
+    assert "Traceback" not in err
+
+
+def test_undecodable_input_is_a_clean_error(tmp_path: Path) -> None:
+    path = tmp_path / "latin.csv"
+    path.write_bytes(b"a,b\n\xff\xfe,1\n")
+    code, _, err = invoke([str(path)])
+    assert code == 2
+    assert "not valid utf-8" in err
+    code, out, _ = invoke([str(path), "--encoding", "latin-1"])
+    assert code == 0 and "ÿ" in out
+
+
+def test_an_unknown_encoding_is_a_usage_error(csv_file: str) -> None:
+    code, _, err = invoke([csv_file, "--encoding", "no-such-codec"])
+    assert code == 2
+    assert "unknown encoding" in err

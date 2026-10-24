@@ -4,8 +4,14 @@ Stream-transform very large CSV files with a small, safe expression language.
 The file is never loaded into memory — a 200 GB export costs the same working
 set as a 2 KB one.
 
+csvsurgeon is not published on PyPI. Install it from a clone (Python 3.10+,
+no runtime dependencies):
+
 ```bash
-pip install csvsurgeon
+git clone https://github.com/hellpuffyt/csvsurgeon
+cd csvsurgeon
+python -m venv .venv && . .venv/bin/activate
+pip install .
 ```
 
 ```bash
@@ -24,15 +30,22 @@ Two things go wrong with ad-hoc CSV surgery.
 dies. csvsurgeon is generators end to end: every operation reads one row and
 yields one row, and `--head` closes the source rather than draining it.
 
-Measured on this machine, filtering and counting with the real console script:
+Measured with the real console script on an Apple M5 (10 cores, 16 GB, macOS 27,
+CPython 3.12), peak RSS from `/usr/bin/time -l`:
 
-| Input | Peak RSS |
-| --- | --- |
-| 2 KB, 3 rows | 4.5 MB |
-| 111 MB, 3,000,000 rows | 4.5 MB |
+```bash
+/usr/bin/time -l csvsurgeon sales.csv \
+  --filter "$amount > 100 and $region ~ 'north'" --count
+```
 
-The same working set, for a file 55,000 times larger. `--head 3` on that 111 MB
-file returns in 0.06 s because it never reads the rest. The guarantee is also
+| Input | Rows | Peak RSS | Wall time |
+| --- | --- | --- | --- |
+| 69 B | 3 | 21.9 MB | 0.06 s |
+| 63 MB | 3,000,000 | 21.9 MB | 6.9 s |
+
+The same working set (the interpreter itself) for a file 900,000 times larger.
+`--head 3` on the 63 MB file returns in 0.07 s because it never reads the rest.
+The guarantee is also
 [asserted in the test suite](tests/test_pipeline.py) rather than only measured
 once — if any step ever started buffering the stream, those tests fail.
 
@@ -115,6 +128,23 @@ commas and newlines survive a round trip. Short rows are padded; long rows keep
 their extra fields under an `_overflow` column rather than crashing the run or
 vanishing silently.
 
+### Limits and refusals
+
+These exist so a bad input fails loudly instead of producing a wrong file:
+
+* A single field larger than Python's `csv` limit (128 KiB) is reported as
+  malformed input, which also bounds memory per row.
+* A header that repeats a column name is refused — rows are keyed by name, so
+  one column would silently overwrite the other.
+* `-o` pointing at the input file is refused: the output would be truncated
+  while the input is still being read.
+* Only plain decimal text (`42`, `-3.5`, `.5`, `1e3`) is treated as a number.
+  Words such as `nan`, `inf` and `Infinity` stay text, so `$name == 'Nan'`
+  matches a person called Nan.
+* Expressions may nest at most 100 levels deep.
+* Input that is not valid in `--encoding` (default UTF-8) stops with exit code
+  2 and a message, not a traceback.
+
 ## As a library
 
 ```python
@@ -136,11 +166,16 @@ with open("people.csv", newline="") as handle:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"   # inside the virtualenv from Install
 pytest -q                 # tests
 ruff check .              # lint
 mypy                      # strict types
 ```
+
+## Security
+
+See [SECURITY.md](SECURITY.md). The audit evidence for this version is in
+[docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md).
 
 ## License
 

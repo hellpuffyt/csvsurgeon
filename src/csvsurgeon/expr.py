@@ -33,6 +33,7 @@ must work on a CSV — and it is applied in exactly one place
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -332,6 +333,10 @@ def _as_text(value: Value) -> str:
     return value
 
 
+_NUMBER_TEXT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+"""What a CSV field must look like to be treated as a number."""
+
+
 def _to_number(value: Value) -> float | None:
     """`value` as a number, or None when it is not one."""
     if value is None:
@@ -341,12 +346,13 @@ def _to_number(value: Value) -> float | None:
     if isinstance(value, float):
         return value
     text = value.strip()
-    if not text:
+    # Only plain decimal notation counts. float() alone would also accept
+    # "nan", "inf", "Infinity" and "1_000", so a person named "Nan" would
+    # compare unequal to the text 'Nan' (NaN != NaN) and never match.
+    if not _NUMBER_TEXT.fullmatch(text):
         return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    number = float(text)
+    return number if math.isfinite(number) else None
 
 
 def _as_number(value: Value, source: str, position: int) -> float:
@@ -445,7 +451,7 @@ class Function:
             return self.handler(args)
         except ExpressionError:
             raise
-        except (ValueError, TypeError, IndexError) as err:
+        except (ValueError, TypeError, IndexError, OverflowError) as err:
             raise ExpressionError(str(err), source, position) from None
 
 
@@ -641,13 +647,54 @@ class Parser:
         return Call(name.text, tuple(args), name.position, self.source)
 
 
+MAX_DEPTH = 100
+"""How deeply an expression may nest.
+
+Evaluation is recursive, so an unbounded tree (``((((...))))`` or
+``1+1+...+1`` thousands of terms long) would end in a ``RecursionError``
+instead of an error message. No real filter comes close to this limit.
+"""
+
+
+def _children(node: Node) -> tuple[Node, ...]:
+    if isinstance(node, Unary):
+        return (node.operand,)
+    if isinstance(node, Binary):
+        return (node.left, node.right)
+    if isinstance(node, Call):
+        return node.args
+    return ()
+
+
+def _depth(root: Node) -> int:
+    """The depth of the tree, computed without recursion."""
+    deepest = 0
+    stack = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        deepest = max(deepest, depth)
+        stack.extend((child, depth + 1) for child in _children(node))
+    return deepest
+
+
 def parse(source: str) -> Node:
     """Parses `source` into an evaluable expression.
 
     Raises:
-        ExpressionError: when the expression is malformed.
+        ExpressionError: when the expression is malformed or nests more
+            than :data:`MAX_DEPTH` levels deep.
     """
-    return Parser(source).parse()
+    try:
+        node = Parser(source).parse()
+    except RecursionError:
+        raise ExpressionError(
+            f"expression nests too deeply (limit {MAX_DEPTH})", source, 0
+        ) from None
+    if _depth(node) > MAX_DEPTH:
+        raise ExpressionError(
+            f"expression nests too deeply (limit {MAX_DEPTH})", source, 0
+        )
+    return node
 
 
 def validate_columns(node: Node, available: Sequence[str]) -> None:
