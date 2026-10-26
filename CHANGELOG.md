@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fields beyond the header's width in long rows were dropped from the output
+  without any notice (the 0.1.0 notes said they were kept in an `_overflow`
+  column; the CLI never wrote one). The output is unchanged, but the CLI now
+  prints a warning on stderr with the number of affected rows.
 - `-o` naming the input file truncated the input while it was being read
   (a 20,000-row file came back with about 6,000 rows). It is now refused.
 - A header that repeats a column name silently replaced one column's values

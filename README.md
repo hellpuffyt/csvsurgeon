@@ -158,10 +158,22 @@ milliseconds on a file of any size rather than an hour in.
 The dialect (`,` `;` tab `|`) is sniffed from a sample and the sample is pushed
 back, so the header is never eaten by the sniff. Quoted fields containing
 commas and newlines survive a round trip. Short rows are padded with empty
-values. Long rows do not crash the run, but the CLI writes only the header's
-columns, so fields beyond the header's width are dropped from the output.
-`io.read_rows` keeps them under an `_overflow` key for library users; they
-are not addressable from expressions.
+values. Long rows do not crash the run. The output keeps the header's
+columns, so fields beyond the header's width are not written, but the loss is
+not silent: the CLI prints one warning line on stderr with the number of
+affected rows (the exit code stays 0, and `--count` and `--header-only` write
+no fields, so they do not warn):
+
+```console
+$ printf 'name,age\nAda,36,extra,more\nBob,9\n' | csvsurgeon
+name,age
+Ada,36
+Bob,9
+csvsurgeon: warning: 1 row had more fields than the header; the extra fields were dropped from the output
+```
+
+`io.read_rows` keeps the extra fields under an `_overflow` key for library
+users; they are not addressable from expressions.
 
 ### Limits and refusals
 

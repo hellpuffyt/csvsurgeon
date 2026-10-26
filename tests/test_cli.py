@@ -256,3 +256,21 @@ def test_an_unknown_encoding_is_a_usage_error(csv_file: str) -> None:
     code, _, err = invoke([csv_file, "--encoding", "no-such-codec"])
     assert code == 2
     assert "unknown encoding" in err
+
+
+def test_dropped_overflow_fields_are_reported_not_silent() -> None:
+    ragged = "name,age\nAda,36,extra,more\nBob,9\nCy,41,x\n"
+    code, out, err = invoke(["-"], stdin=ragged)
+    assert code == 0, err
+    # The output stays rectangular under the header...
+    assert out == "name,age\nAda,36\nBob,9\nCy,41\n"
+    # ...but the loss is reported, with how many rows were affected.
+    assert "warning" in err
+    assert "2 rows" in err
+    assert "_overflow" not in out
+
+
+def test_rectangular_input_produces_no_overflow_warning(csv_file: str) -> None:
+    code, _, err = invoke([csv_file])
+    assert code == 0
+    assert err == ""

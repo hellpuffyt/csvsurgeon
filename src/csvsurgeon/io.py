@@ -9,7 +9,8 @@ files and one that works on examples:
 * **Ragged rows.** Real exports have short and long rows.
   :func:`read_rows` fills short rows with empty strings and collects
   overflow under a single well-known key, so a malformed row is visible
-  in the output rather than crashing the run or silently vanishing.
+  to the caller rather than crashing the run or silently vanishing (the
+  command line counts these rows and warns on stderr).
 """
 
 from __future__ import annotations
@@ -136,7 +137,8 @@ def write_rows(
 ) -> int:
     """Writes `rows` under `header`. Returns how many were written.
 
-    Values not in the header are dropped, and missing ones are written
+    Values not in the header (including :data:`OVERFLOW_KEY`) are
+    dropped, and missing ones are written
     empty, so the output is always rectangular even when the input was
     not.
     """
