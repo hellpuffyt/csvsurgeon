@@ -15,13 +15,13 @@ import codecs
 import csv
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import TextIO
 
 from . import __version__
 from .errors import CsvSurgeonError, UsageError
-from .expr import parse
-from .io import open_input, open_output, read_rows, write_rows
+from .expr import Row, parse
+from .io import OVERFLOW_KEY, open_input, open_output, read_rows, write_rows
 from .pipeline import (
     Compute,
     Drop,
@@ -212,6 +212,33 @@ def _refuse_overwriting_input(source: str | None, output: str | None) -> None:
         )
 
 
+class _OverflowCounter:
+    """Counts rows that arrive with fields beyond the header's width.
+
+    :func:`write_rows` writes only the header's columns, so those extra
+    fields never reach the output. Counting them lets the command say so
+    on stderr instead of dropping data silently.
+    """
+
+    def __init__(self) -> None:
+        self.rows = 0
+
+    def watch(self, rows: Iterator[Row]) -> Iterator[Row]:
+        for row in rows:
+            if OVERFLOW_KEY in row:
+                self.rows += 1
+            yield row
+
+    def report(self, stderr: TextIO) -> None:
+        if self.rows:
+            noun = "row" if self.rows == 1 else "rows"
+            print(
+                f"{PROGRAM}: warning: {self.rows} {noun} had more fields than "
+                "the header; the extra fields were dropped from the output",
+                file=stderr,
+            )
+
+
 def run(
     argv: Sequence[str] | None,
     stdout: TextIO,
@@ -237,7 +264,8 @@ def run(
                 print(args.output_delimiter.join(out_header), file=stdout)
                 return 0
 
-            transformed = pipeline.apply(rows)
+            overflow = _OverflowCounter()
+            transformed = pipeline.apply(overflow.watch(rows))
 
             if args.count:
                 count = sum(1 for _ in transformed)
@@ -246,6 +274,7 @@ def run(
 
             with open_output(args.output, args.encoding, stdout) as destination:
                 write_rows(destination, out_header, transformed, args.output_delimiter)
+            overflow.report(stderr)
         return 0
     except CsvSurgeonError as err:
         print(f"{PROGRAM}: {err}", file=stderr)
