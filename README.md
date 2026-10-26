@@ -1,8 +1,42 @@
 # csvsurgeon
 
-Stream-transform very large CSV files with a small, safe expression language.
-The file is never loaded into memory — a 200 GB export costs the same working
-set as a 2 KB one.
+A Python CLI that filters, computes and reshapes CSV files one row at a time
+with a small expression language of its own, so the file is never loaded
+into memory and filter strings never reach `eval`.
+
+## Demo
+
+<img src="docs/screenshots/csvsurgeon-people-example.png" width="100%" alt="Terminal capture: cat examples/people.csv, then csvsurgeon filtering age over 20 and computing a city-name label (london-Ada, london-Cy), counting 2 rows, rejecting the misspelled column aeg, and pointing a caret at the incomplete expression '1 +', exit status 2.">
+
+Real terminal capture against `examples/people.csv`. The same session as text:
+
+```
+$ csvsurgeon examples/people.csv --filter '$age > 20' --compute 'label=lower($city) + "-" + $name' --select label
+label
+london-Ada
+london-Cy
+$ csvsurgeon examples/people.csv --filter '$age > 20' --count
+2
+$ csvsurgeon examples/people.csv --filter '$aeg > 30'
+csvsurgeon: no such column 'aeg'; input has: name, age, city
+$ csvsurgeon examples/people.csv --filter '1 +'
+csvsurgeon: unexpected 'end of expression'
+1 +
+   ^
+$ echo $?
+2
+```
+
+Bob (age 9) is dropped because `"9"` and `20` are compared as numbers, not
+as text.
+
+**Quote expressions with single quotes.** Column references start with `$`,
+so inside double quotes your shell expands `$age` to an empty string before
+csvsurgeon sees it (`--filter "$age > 30"` arrives as ` > 30` and fails to
+parse). Use single quotes around the expression and double quotes for string
+literals inside it, or refer to columns by bare name (`age > 30`).
+
+## Install
 
 csvsurgeon is not published on PyPI. Install it from a clone (Python 3.10+,
 no runtime dependencies):
@@ -10,14 +44,17 @@ no runtime dependencies):
 ```bash
 git clone https://github.com/hellpuffyt/csvsurgeon
 cd csvsurgeon
-python -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && . .venv/bin/activate
 pip install .
 ```
 
+`python -m csvsurgeon` works the same as the `csvsurgeon` script. A larger
+pipeline (`sales.csv` stands in for your own file):
+
 ```bash
 csvsurgeon sales.csv \
-  --filter "$amount > 100 and $region ~ 'north'" \
-  --compute "label=lower($region) + '-' + $customer" \
+  --filter '$amount > 100 and $region ~ "north"' \
+  --compute 'label=lower($region) + "-" + $customer' \
   --select "label,amount" \
   -o big-northern-sales.csv
 ```
@@ -35,7 +72,7 @@ CPython 3.12), peak RSS from `/usr/bin/time -l`:
 
 ```bash
 /usr/bin/time -l csvsurgeon sales.csv \
-  --filter "$amount > 100 and $region ~ 'north'" --count
+  --filter '$amount > 100 and $region ~ "north"' --count
 ```
 
 | Input | Rows | Peak RSS | Wall time |
@@ -47,14 +84,15 @@ The same working set (the interpreter itself) for a file 900,000 times larger.
 `--head 3` on the 63 MB file returns in 0.07 s because it never reads the rest.
 The guarantee is also
 [asserted in the test suite](tests/test_pipeline.py) rather than only measured
-once — if any step ever started buffering the stream, those tests fail.
+once. If any step ever started buffering the stream, those tests fail.
 
 **`eval`.** The obvious way to accept `--filter "$age > 30"` is to hand the
 string to Python. That gives every filter flag on every data pipeline the full
 power of the interpreter, on files that usually came from somewhere else.
 csvsurgeon has a real tokenizer, parser and evaluator over a fixed set of
 operations. `__import__('os')`, `().__class__` and `open('x')` are not
-"blocked" — they have no meaning in the grammar and cannot be expressed.
+"blocked"; they have no meaning in the grammar and cannot be expressed
+(`__import__` is reported as an unknown function).
 
 ## Operations
 
@@ -73,20 +111,25 @@ composable: a `--filter` after a `--compute` can test the computed column.
 
 Plus `--count` (write how many rows survive, not the rows), `--header-only`
 (show the resulting header without reading a single row), `-d/--delimiter`,
-`--output-delimiter` and `--encoding`.
+`--output-delimiter`, `--encoding` and `--version`. The input may be `-` for
+stdin, and output goes to stdout unless `-o FILE` is given.
+
+Exit status is `0` on success and `2` for any error: a bad expression, an
+unknown column, malformed CSV, an encoding error or a bad flag. Errors are
+one line on stderr, never a traceback.
 
 ## The expression language
 
-**Columns** — `$name`, or a bare `name`. Use `$"total sales"` for names with
+**Columns**: `$name`, or a bare `name`. Use `$"total sales"` for names with
 spaces.
 
-**Literals** — `42`, `3.5`, `'text'`, `"text"`, `true`, `false`, `null`.
+**Literals**: `42`, `3.5`, `'text'`, `"text"`, `true`, `false`, `null`.
 
-**Operators** — `or`, `and`, `not`, `== != < <= > >=`, `+ - * / %`, unary `-`,
+**Operators**: `or`, `and`, `not`, `== != < <= > >=`, `+ - * / %`, unary `-`,
 and `~` for a case-insensitive "contains". Parentheses group. `and`/`or`
 short-circuit, so `$x != '' and $x > 5` is safe on empty fields.
 
-**Functions** — `upper` `lower` `trim` `len` `abs` `round` `num` `str`
+**Functions**: `upper` `lower` `trim` `len` `abs` `round` `num` `str`
 `replace` `contains` `startswith` `endswith` `substr` `coalesce` `concat`
 `split`.
 
@@ -97,7 +140,7 @@ larger, which would silently corrupt every numeric filter ever written. So when
 both sides of a comparison look like numbers, they are compared as numbers:
 
 ```bash
-csvsurgeon people.csv --filter "$age > 30"   # 9 is not greater than 30
+csvsurgeon examples/people.csv --filter '$age > 30'   # Bob, 9, is not kept
 ```
 
 `+` follows the same idea from the other side: it adds when both sides are
@@ -105,28 +148,20 @@ numbers and concatenates otherwise, which is how you build labels.
 
 ## Errors point at the problem
 
-```
-$ csvsurgeon people.csv --filter "1 +"
-csvsurgeon: unexpected 'end of expression'
-1 +
-   ^
-```
-
-Column names are checked against the header **before the first row is read**, so
-a typo fails in milliseconds on a file of any size rather than an hour in:
-
-```
-$ csvsurgeon people.csv --filter "$aeg > 30"
-csvsurgeon: no such column 'aeg'; input has: name, age, city
-```
+Parse errors print the expression with a caret under the problem (see the
+`'1 +'` example in the demo). Column names are checked against the header
+**before the first row is read**, so a typo such as `$aeg` fails in
+milliseconds on a file of any size rather than an hour in.
 
 ## Real files
 
 The dialect (`,` `;` tab `|`) is sniffed from a sample and the sample is pushed
 back, so the header is never eaten by the sniff. Quoted fields containing
-commas and newlines survive a round trip. Short rows are padded; long rows keep
-their extra fields under an `_overflow` column rather than crashing the run or
-vanishing silently.
+commas and newlines survive a round trip. Short rows are padded with empty
+values. Long rows do not crash the run, but the CLI writes only the header's
+columns, so fields beyond the header's width are dropped from the output.
+`io.read_rows` keeps them under an `_overflow` key for library users; they
+are not addressable from expressions.
 
 ### Limits and refusals
 
@@ -134,7 +169,7 @@ These exist so a bad input fails loudly instead of producing a wrong file:
 
 * A single field larger than Python's `csv` limit (128 KiB) is reported as
   malformed input, which also bounds memory per row.
-* A header that repeats a column name is refused — rows are keyed by name, so
+* A header that repeats a column name is refused. Rows are keyed by name, so
   one column would silently overwrite the other.
 * `-o` pointing at the input file is refused: the output would be truncated
   while the input is still being read.
@@ -167,10 +202,15 @@ with open("people.csv", newline="") as handle:
 
 ```bash
 pip install -e ".[dev]"   # inside the virtualenv from Install
-pytest -q                 # tests
+pytest -q                 # 206 tests
 ruff check .              # lint
 mypy                      # strict types
 ```
+
+CI runs the tests on Linux, macOS and Windows with Python 3.10 to 3.13, plus
+ruff, strict mypy, coverage, and the demo pipeline above as a smoke test.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the design rules a change has to
+keep (no buffering, no `eval`, no runtime dependencies).
 
 ## Security
 
@@ -179,4 +219,4 @@ See [SECURITY.md](SECURITY.md). The audit evidence for this version is in
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
